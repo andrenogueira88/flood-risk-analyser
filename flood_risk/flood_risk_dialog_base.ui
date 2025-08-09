@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>FloodRiskAnalyzerDialogBase</class>
+ <widget class="QDialog" name="FloodRiskAnalyzerDialogBase">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>971</width>
+    <height>478</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Flood Risk Indetifier</string>
+  </property>
+  <widget class="QDialogButtonBox" name="button_box">
+   <property name="geometry">
+    <rect>
+     <x>610</x>
+     <y>440</y>
+     <width>341</width>
+     <height>32</height>
+    </rect>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Horizontal</enum>
+   </property>
+   <property name="standardButtons">
+    <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+   </property>
+  </widget>
+  <widget class="QTabWidget" name="tabWidget">
+   <property name="geometry">
+    <rect>
+     <x>20</x>
+     <y>10</y>
+     <width>931</width>
+     <height>421</height>
+    </rect>
+   </property>
+   <property name="currentIndex">
+    <number>1</number>
+   </property>
+   <widget class="QWidget" name="DataSource">
+    <attribute name="title">
+     <string>Tab 1</string>
+    </attribute>
+    <widget class="QListWidget" name="fileListWidget">
+     <property name="geometry">
+      <rect>
+       <x>20</x>
+       <y>10</y>
+       <width>291</width>
+       <height>341</height>
+      </rect>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="addItem">
+     <property name="geometry">
+      <rect>
+       <x>120</x>
+       <y>360</y>
+       <width>81</width>
+       <height>21</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Add Item</string>
+     </property>
+    </widget>
+    <widget class="QComboBox" name="comboBox">
+     <property name="geometry">
+      <rect>
+       <x>400</x>
+       <y>10</y>
+       <width>121</width>
+       <height>21</height>
+      </rect>
+     </property>
+     <item>
+      <property name="text">
+       <string>Continuous</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Categorical</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Binary</string>
+      </property>
+     </item>
+     <item>
+      <property name="text">
+       <string>Target</string>
+      </property>
+     </item>
+    </widget>
+    <widget class="QLabel" name="dataType">
+     <property name="geometry">
+      <rect>
+       <x>330</x>
+       <y>10</y>
+       <width>61</width>
+       <height>21</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Data Type:</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="removeItem">
+     <property name="geometry">
+      <rect>
+       <x>210</x>
+       <y>360</y>
+       <width>81</width>
+       <height>21</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Remove Item</string>
+     </property>
+    </widget>
+    <widget class="QPushButton" name="processDataFrame">
+     <property name="geometry">
+      <rect>
+       <x>400</x>
+       <y>320</y>
+       <width>121</width>
+       <height>31</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Process Data Frame</string>
+     </property>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="FeaturesStat">
+    <attribute name="title">
+     <string>Tab 2</string>
+    </attribute>
+    <widget class="QTableWidget" name="contDist">
+     <property name="geometry">
+      <rect>
+       <x>20</x>
+       <y>30</y>
+       <width>341</width>
+       <height>351</height>
+      </rect>
+     </property>
+    </widget>
+    <widget class="QListWidget" name="catFeat">
+     <property name="geometry">
+      <rect>
+       <x>380</x>
+       <y>30</y>
+       <width>261</width>
+       <height>351</height>
+      </rect>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label">
+     <property name="geometry">
+      <rect>
+       <x>30</x>
+       <y>10</y>
+       <width>171</width>
+       <height>16</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Continuous Features Statistics</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label_2">
+     <property name="geometry">
+      <rect>
+       <x>380</x>
+       <y>10</y>
+       <width>171</width>
+       <height>16</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Categorical Features Statistics</string>
+     </property>
+    </widget>
+    <widget class="QListWidget" name="targetDist">
+     <property name="geometry">
+      <rect>
+       <x>670</x>
+       <y>30</y>
+       <width>241</width>
+       <height>351</height>
+      </rect>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label_3">
+     <property name="geometry">
+      <rect>
+       <x>680</x>
+       <y>10</y>
+       <width>171</width>
+       <height>16</height>
+      </rect>
+     </property>
+     <property name="text">
+      <string>Target Class Distribution:</string>
+     </property>
+    </widget>
+   </widget>
+  </widget>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>button_box</sender>
+   <signal>accepted()</signal>
+   <receiver>FloodRiskAnalyzerDialogBase</receiver>
+   <slot>accept()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>20</x>
+     <y>20</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>20</x>
+     <y>20</y>
+    </hint>
+   </hints>
+  </connection>
+  <connection>
+   <sender>button_box</sender>
+   <signal>rejected()</signal>
+   <receiver>FloodRiskAnalyzerDialogBase</receiver>
+   <slot>reject()</slot>
+   <hints>
+    <hint type="sourcelabel">
+     <x>20</x>
+     <y>20</y>
+    </hint>
+    <hint type="destinationlabel">
+     <x>20</x>
+     <y>20</y>
+    </hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>
