@@ -25,9 +25,7 @@ from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction
 
-# Initialize Qt resources from file resources.py
 from .resources import *
-# Import the code for the dialog
 from .flood_risk_dialog import FloodRiskAnalyzerDialog
 import os.path
 
@@ -43,11 +41,8 @@ class FloodRiskAnalyzer:
             application at run time.
         :type iface: QgsInterface
         """
-        # Save reference to the QGIS interface
         self.iface = iface
-        # initialize plugin directory
         self.plugin_dir = os.path.dirname(__file__)
-        # initialize locale
         locale = QSettings().value('locale/userLocale')[0:2]
         locale_path = os.path.join(
             self.plugin_dir,
@@ -59,15 +54,11 @@ class FloodRiskAnalyzer:
             self.translator.load(locale_path)
             QCoreApplication.installTranslator(self.translator)
 
-        # Declare instance attributes
         self.actions = []
         self.menu = self.tr(u'&Flood Risk Indetifier')
 
-        # Check if plugin was started the first time in current QGIS session
-        # Must be set in initGui() to survive plugin reloads
         self.first_start = None
 
-    # noinspection PyMethodMayBeStatic
     def tr(self, message):
         """Get the translation for a string using Qt translation API.
 
@@ -79,7 +70,6 @@ class FloodRiskAnalyzer:
         :returns: Translated version of message.
         :rtype: QString
         """
-        # noinspection PyTypeChecker,PyArgumentList,PyCallByClass
         return QCoreApplication.translate('FloodRiskAnalyzer', message)
 
 
@@ -145,7 +135,6 @@ class FloodRiskAnalyzer:
             action.setWhatsThis(whats_this)
 
         if add_to_toolbar:
-            # Adds plugin icon to Plugins toolbar
             self.iface.addToolBarIcon(action)
 
         if add_to_menu:
@@ -167,7 +156,6 @@ class FloodRiskAnalyzer:
             callback=self.run,
             parent=self.iface.mainWindow())
 
-        # will be set False in run()
         self.first_start = True
 
 
@@ -182,28 +170,21 @@ class FloodRiskAnalyzer:
 
     def run(self):
         """Run method that performs all the real work"""
-        # Create the dialog with elements (after translation) and keep reference
         if self.first_start:
             self.first_start = False
             self.dlg = FloodRiskAnalyzerDialog()
 
-        # show the dialog
         self.dlg.show()
         
-        # Run the dialog event loop
         result = self.dlg.exec_()
         
-        # See if OK was pressed
         if result:
-            # Get the files data
             files_data = self.dlg.get_files_data()
             
-            # Process the files based on their types
             for file_name, file_info in files_data.items():
                 file_path = file_info['path']
                 file_type = file_info['type']
-                
-                # Here you can add your processing logic based on file type
+
                 self.iface.messageBar().pushMessage(
                     "Success",
                     f"Processing {file_name} as {file_type} type",

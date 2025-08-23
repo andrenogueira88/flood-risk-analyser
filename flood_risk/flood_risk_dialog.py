@@ -22,6 +22,16 @@
  ***************************************************************************/
 """
 
+from sklearn.feature_selection import (
+    SelectKBest, f_classif, mutual_info_classif,
+    RFE, SelectFromModel
+)
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report
+from qgis.PyQt.QtCore import QAbstractTableModel, Qt, QVariant
+from qgis.PyQt.QtWidgets import QTableWidgetItem
+
 from qgis.PyQt import uic
 from qgis.PyQt import QtWidgets
 from qgis.PyQt.QtWidgets import QFileDialog, QMessageBox, QTableWidgetItem
@@ -35,29 +45,162 @@ from osgeo import gdal
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'flood_risk_dialog_base.ui'))
 
+class FeatureImportanceModel(QAbstractTableModel):
+    """
+    Custom table model for displaying feature importance results in a QTableView.
+    
+    This model provides a structured way to display feature selection results
+    including rank, feature name, importance score, and selection status.
+    
+    Attributes:
+        _data (list): Internal storage for table data as list of rows
+        _headers (list): Column headers for the table
+    """
+    
+    def __init__(self, data=None):
+        """
+        Initialize the FeatureImportanceModel.
+        
+        Args:
+            data (list, optional): Initial data for the table. Defaults to None.
+        """
+        super().__init__()
+        self._data = data or []
+        self._headers = ['Rank', 'Feature Name', 'Importance Score', 'Selected']
+    
+    def data(self, index, role):
+        """
+        Return data for a given table cell based on index and role.
+        
+        Args:
+            index (QModelIndex): The model index specifying row and column
+            role (int): The Qt role (e.g., DisplayRole, EditRole)
+            
+        Returns:
+            QVariant: The data for the specified cell, or QVariant() if invalid
+        """
+        if role == Qt.DisplayRole:
+            return str(self._data[index.row()][index.column()])
+        return QVariant()
+    
+    def rowCount(self, index):
+        """
+        Return the number of rows in the model.
+        
+        Args:
+            index (QModelIndex): Parent model index (unused for table model)
+            
+        Returns:
+            int: Number of rows in the data
+        """
+        return len(self._data)
+    
+    def columnCount(self, index):
+        """
+        Return the number of columns in the model.
+        
+        Args:
+            index (QModelIndex): Parent model index (unused for table model)
+            
+        Returns:
+            int: Number of columns (headers)
+        """
+        return len(self._headers)
+    
+    def headerData(self, section, orientation, role):
+        """
+        Return header data for the specified section and orientation.
+        
+        Args:
+            section (int): The section number (column or row index)
+            orientation (Qt.Orientation): Horizontal or vertical orientation
+            role (int): The Qt role
+            
+        Returns:
+            QVariant: Header label or QVariant() if invalid
+        """
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            return self._headers[section]
+        return QVariant()
+    
+    def update_data(self, data):
+        """
+        Update the model with new data and notify views.
+        
+        Args:
+            data (list): New data as list of rows to replace current data
+        """
+        self.beginResetModel()
+        self._data = data
+        self.endResetModel()
 
 class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
+    """
+    Main dialog class for the Flood Risk Analyzer QGIS plugin.
+    
+    This dialog provides a user interface for:
+    - Loading and managing raster files for flood risk analysis
+    - Processing multiple raster layers into a unified DataFrame
+    - Performing feature selection using various machine learning methods
+    - Displaying statistics and feature importance results
+    
+    Attributes:
+        files_dict (dict): Dictionary storing file paths and types
+        processed_df (pd.DataFrame): Processed and merged DataFrame from all rasters
+        selected_features (list): List of selected feature names after feature selection
+        current_method (str): Currently selected feature selection method
+        num_features_to_select (int): Number of top features to select
+        feature_model (FeatureImportanceModel): Model for displaying feature results
+    """
     def __init__(self, parent=None):
-        """Constructor."""
+        """
+        Initialize the FloodRiskAnalyzerDialog.
+        
+        Sets up the UI components, initializes data structures, and connects
+        signal handlers for user interactions.
+        
+        Args:
+            parent (QWidget, optional): Parent widget. Defaults to None.
+        """
         super(FloodRiskAnalyzerDialog, self).__init__(parent)
         self.setupUi(self)
-        
-        # Initialize file dictionary to store file paths and their types
+
         self.files_dict = {}
-        
-        # Connect signals with correct UI element names
+        self.processed_df = None
+        self.selected_features = []
+        self.current_method = None
+        self.num_features_to_select = 10
+
+        self.feature_model = FeatureImportanceModel()
+        self.featImpValues.setModel(self.feature_model)
+
         self.addItem.clicked.connect(self.add_file)
         self.removeItem.clicked.connect(self.remove_file)
         self.comboBox.currentIndexChanged.connect(self.update_file_type)
-        
-        # Add selection change handler
+        self.fileListWidget.itemSelectionChanged.connect(self.on_selection_change)
+        self.processDataFrame.clicked.connect(self.process_dataframe)
+
+        self.featImpCalc.clicked.connect(self.calculate_feature_importance)
+        self.MethodsList.itemClicked.connect(self.on_method_selected)
+
+        self.setup_methods_list()
+
+        self.addItem.clicked.connect(self.add_file)
+        self.removeItem.clicked.connect(self.remove_file)
+        self.comboBox.currentIndexChanged.connect(self.update_file_type)
+
         self.fileListWidget.itemSelectionChanged.connect(self.on_selection_change)
 
-        # Add connection for process button
         self.processDataFrame.clicked.connect(self.process_dataframe)
 
     def add_file(self):
-        """Open file dialog and add selected file to list"""
+        """
+        Open a file dialog to select and add a raster file to the analysis.
+        
+        Opens a file dialog allowing the user to select raster files (TIF, IMG)
+        or vector files (SHP). The selected file is added to the file list widget
+        and stored in the files dictionary with default 'Continuous' type.
+        """
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Input File",
@@ -66,29 +209,35 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         )
 
         if file_path:
-            # Add file to list widget
             file_name = os.path.basename(file_path)
             self.fileListWidget.addItem(file_name)
 
-            # Store full path and initial type (use 'Continuous' instead of 'float')
             self.files_dict[file_name] = {
                 'path': file_path,
-                'type': 'Continuous'  # Changed from 'float' to match comboBox options
+                'type': 'Continuous'
             }
 
     def remove_file(self):
-        """Remove selected file from list"""
+        """
+        Remove the currently selected file from the file list and dictionary.
+        
+        Removes both the visual representation in the list widget and the
+        corresponding entry in the files dictionary.
+        """
         current_item = self.fileListWidget.currentItem()
         if current_item:
             file_name = current_item.text()
-            # Remove from dictionary
             if file_name in self.files_dict:
                 del self.files_dict[file_name]
-            # Remove from list widget
             self.fileListWidget.takeItem(self.fileListWidget.row(current_item))
 
     def update_file_type(self):
-        """Update the type of the currently selected file"""
+        """
+        Update the data type of the currently selected file.
+        
+        Changes the type (Continuous, Categorical, Binary, Target) of the
+        selected file based on the current combo box selection.
+        """
         current_item = self.fileListWidget.currentItem()
         if current_item:
             file_name = current_item.text()
@@ -97,33 +246,47 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 self.files_dict[file_name]['type'] = new_type
 
     def on_selection_change(self):
-        """Update combo box when list selection changes"""
+        """
+        Handle file list selection changes.
+        
+        Updates the combo box to show the current type of the selected file
+        when the user clicks on a different file in the list.
+        """
         current_item = self.fileListWidget.currentItem()
         if current_item:
             file_name = current_item.text()
             if file_name in self.files_dict:
-                # Set combo box to current file type
                 current_type = self.files_dict[file_name]['type']
                 index = self.comboBox.findText(current_type)
                 if index >= 0:
                     self.comboBox.setCurrentIndex(index)
 
     def get_files_data(self):
-        """Return the dictionary of files and their types"""
+        """
+        Get the dictionary of files and their assigned types.
+        
+        Returns:
+            dict: Dictionary with file names as keys and file info (path, type) as values
+        """
         return self.files_dict
 
     def raster_to_dataframe(self, raster_layer, column_name):
         """
-        Converts a raster layer to a pandas DataFrame with pixel values and their corresponding spatial coordinates.
+        Convert a QGIS raster layer to a pandas DataFrame with spatial coordinates.
 
-        Parameters:
-            raster_layer (QgsRasterLayer): The raster layer to convert.
+        Extracts pixel values from a raster layer and creates a DataFrame containing
+        the pixel values along with their corresponding x, y coordinates. NoData
+        values are converted to NaN for proper handling in pandas.
+
+        Args:
+            raster_layer (QgsRasterLayer): The QGIS raster layer to convert
+            column_name (str): Name for the column containing pixel values
 
         Returns:
-            pandas.DataFrame: A DataFrame with columns:
-                - 'value': The raster pixel value (with NoData replaced by np.nan).
-                - 'x': The x-coordinate of the pixel center.
-                - 'y': The y-coordinate of the pixel center.
+            pd.DataFrame: DataFrame with columns:
+                - column_name: The raster pixel values (NoData replaced with np.nan)
+                - 'x': X-coordinate of pixel center
+                - 'y': Y-coordinate of pixel center
         """
         
         provider = raster_layer.dataProvider()
@@ -162,18 +325,37 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         return df
 
     def process_dataframe(self):
-        """Process all files into a unified dataframe"""
-        # Group files by type
+        """
+        Process all loaded raster files into a unified DataFrame for analysis.
+        
+        This method:
+        1. Validates that exactly one target file is specified
+        2. Loads all raster files and checks for CRS and resolution compatibility
+        3. Converts rasters to DataFrames based on their assigned types:
+           - Continuous: Direct conversion
+           - Categorical: One-hot encoding
+           - Binary: Boolean to 0/1 conversion
+           - Target: Boolean to 0/1 conversion
+        4. Merges all DataFrames on spatial coordinates (x, y)
+        5. Updates statistics tables in the UI
+        6. Saves processed data to Parquet format
+        7. Enables feature selection functionality
+        
+        Raises:
+            Critical error dialogs for various validation failures including:
+            - Invalid number of target files
+            - Invalid raster layers
+            - CRS mismatches between layers
+            - Resolution mismatches between layers
+        """
         files_by_type = {'Continuous': [], 'Categorical': [], 'Binary': [], 'Target': []}
         for file_name, file_info in self.files_dict.items():
             files_by_type[file_info['type']].append(file_info['path'])
 
-        # Validate target file
         if len(files_by_type['Target']) != 1:
             QMessageBox.critical(self, "Error", "Exactly one target file must be specified")
             return
 
-        # Check CRS and resolution matching
         raster_layers = {}
         reference_layer = None
         
@@ -187,13 +369,11 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 if reference_layer is None:
                     reference_layer = layer
                 else:
-                    # Check CRS matching
                     if layer.crs() != reference_layer.crs():
                         QMessageBox.critical(self, "Error", 
                             f"CRS mismatch between {file_path} and reference layer")
                         return
-                    
-                    # Check resolution matching
+
                     if layer.rasterUnitsPerPixelX() != reference_layer.rasterUnitsPerPixelX():
                         QMessageBox.critical(self, "Error", 
                             f"Resolution mismatch between {file_path} and reference layer")
@@ -201,13 +381,11 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 
                 raster_layers[file_path] = layer
 
-        # Convert rasters to dataframe with coordinates
         dataframes = []
         features = []
         
         for file_type, file_paths in files_by_type.items():
             for file_path in file_paths:
-                # Read raster data using QGIS provider (similar to main.py)
                 column_name = os.path.basename(file_path).replace('.tif', '')
                 layer = raster_layers[file_path]
                 df = self.raster_to_dataframe(layer, column_name)
@@ -215,9 +393,7 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 
                 if file_type == 'Categorical':
                     print("Categorical Processing")
-                    # Apply one-hot encoding
                     one_hot = pd.get_dummies(df[column_name], prefix=column_name)
-                    # Add coordinates to one-hot encoded data
                     one_hot_with_coords = pd.concat([df[['x', 'y']], one_hot], axis=1)
                     dataframes.append(one_hot_with_coords)
                     dataframes.append(df)
@@ -231,18 +407,14 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 elif file_type == 'Target':
                     print("Target Processing")
                     df[column_name] = df[column_name].replace({True: 1, False: 0})
-                    # if not set(df[column_name].unique()).issubset({0, 1}):
-                    #     QMessageBox.critical(self, "Error", "Target must be binary (0/1)")
-                    #     return
                     target_name = column_name
                     dataframes.append(df)
                     features.append(column_name)
-                else:  # Continuous
+                else:
                     print("Continuous Processing")
                     dataframes.append(df)
                     features.append(column_name)
 
-        # Merge dataframes by coordinates instead of concatenating
         if dataframes:
             final_df = dataframes[0]
             for df in dataframes[1:]:
@@ -254,19 +426,30 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         QgsMessageLog.logMessage(f"{final_df.columns.tolist()}")
         final_df[target_name] = final_df[target_name].fillna(0)
 
-        # Update statistics before saving
+        self.processed_df = final_df.copy()
+
         final_df.dropna(subset=features, how='any', inplace=True)
         self.update_statistics_tables(final_df)
-        
-        # Save processed dataframe
+
+        self.enable_feature_selection()
+
         output_path = os.path.join(os.path.dirname(list(files_by_type.values())[0][0]), 'processed_data.parquet')
         final_df.to_parquet(output_path)
         QMessageBox.information(self, "Success", 
-            f"Data processed successfully and saved to {output_path}")
+             f"Data processed successfully and saved to {output_path}\n\nFeature Selection tab is now ready!")
 
     def update_statistics_tables(self, df):
-        """Update all statistics tables with DataFrame information"""
-        # Get column types based on original file types
+        """
+        Update all statistics display tables with DataFrame information.
+        
+        Populates the UI statistics tables with:
+        - Continuous features: descriptive statistics (mean, std, min, max)
+        - Categorical features: unique values and their counts
+        - Target distribution: class balance information
+        
+        Args:
+            df (pd.DataFrame): The processed DataFrame containing all features
+        """
         continuous_cols = [os.path.basename(path).replace('.tif', '') for path, info in self.files_dict.items() 
                         if info['type'] == 'Continuous']
         categorical_cols = [os.path.basename(path).replace('.tif', '') for path, info in self.files_dict.items() 
@@ -274,24 +457,19 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         target_col = [os.path.basename(path).replace('.tif', '') for path, info in self.files_dict.items() 
                     if info['type'] == 'Target'][0]
 
-        # 1. Continuous Features Statistics
         cont_stats = df[continuous_cols].describe()
-        self.contDist.setRowCount(4)  # mean, std, min, max
+        self.contDist.setRowCount(4)
         self.contDist.setColumnCount(len(continuous_cols))
         
-        # Set headers
         self.contDist.setHorizontalHeaderLabels(continuous_cols)
         self.contDist.setVerticalHeaderLabels(['Mean', 'Std', 'Min', 'Max'])
         
-        # Fill data
         for col_idx, col in enumerate(continuous_cols):
             self.contDist.setItem(0, col_idx, QTableWidgetItem(f"{cont_stats[col]['mean']:.2f}"))
             self.contDist.setItem(1, col_idx, QTableWidgetItem(f"{cont_stats[col]['std']:.2f}"))
             self.contDist.setItem(2, col_idx, QTableWidgetItem(f"{cont_stats[col]['min']:.2f}"))
             self.contDist.setItem(3, col_idx, QTableWidgetItem(f"{cont_stats[col]['max']:.2f}"))
 
-
-        # 2. Categorical Features
         self.catFeat.clear()
         for col in categorical_cols:
             df[col] = df[col].astype(str)
@@ -301,7 +479,6 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                 count = df[col].value_counts()[val]
                 self.catFeat.addItem(f"    {val}: {count} samples")
 
-        # 3. Target Distribution
         target_dist = df[target_col].value_counts()
         total_samples = len(df)
         
@@ -310,3 +487,236 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         for class_val, count in target_dist.items():
             percentage = (count / total_samples) * 100
             self.targetDist.addItem(f"Class {class_val}: {count} samples ({percentage:.2f}%)")
+
+    def setup_methods_list(self):
+        """
+        Initialize the feature selection methods list widget.
+        
+        Populates the methods list with available feature selection techniques,
+        each with a brief description of its characteristics and use cases.
+        Sets the default selection to ANOVA F Test.
+        """
+        methods = [
+            "ANOVA F Test - Best for continuous features", 
+            "Mutual Information - Captures non-linear relationships",
+            "Random Forest Importance - Handles feature interactions",
+            "Recursive Feature Elimination - Iterative selection",
+            "L1 Regularization - Automatic sparse selection"
+        ]
+        
+        self.MethodsList.clear()
+        for method in methods:
+            self.MethodsList.addItem(method)
+
+        if methods:
+            self.MethodsList.setCurrentRow(0)
+            self.current_method = "ANOVA F Test"
+
+    def on_method_selected(self, item):
+        """
+        Handle selection of a feature selection method from the list.
+        
+        Updates the current method and changes the button text to reflect
+        the selected method.
+        
+        Args:
+            item (QListWidgetItem): The selected list item containing method info
+        """
+        method_text = item.text()
+        self.current_method = method_text.split(' - ')[0]
+
+        self.featImpCalc.setText(f"Apply {self.current_method}")
+
+    def enable_feature_selection(self):
+        """
+        Enable the feature selection functionality after data processing.
+        
+        Determines the maximum number of available features and enables
+        the feature selection button with appropriate text indicating
+        the selected method and number of features to select.
+        """
+        if self.processed_df is not None:
+            feature_cols = [col for col in self.processed_df.columns 
+                           if col not in ['x', 'y'] and not any(col.endswith(suffix) for suffix in 
+                           [name.replace('.tif', '') for name, info in self.files_dict.items() if info['type'] == 'Target'])]
+            
+            max_features = len(feature_cols)
+            self.num_features_to_select = min(10, max_features)
+            
+            self.featImpCalc.setText(f"Apply {self.current_method or 'ANOVA F Test'} (Top {self.num_features_to_select})")
+            self.featImpCalc.setEnabled(True)
+
+    def calculate_feature_importance(self):
+        """
+        Execute the selected feature selection method on the processed data.
+        
+        This method:
+        1. Validates that data has been processed and a method is selected
+        2. Prepares feature matrix (X) and target vector (y) from processed DataFrame
+        3. Handles missing values by removing rows with NaN
+        4. Applies the selected feature selection algorithm
+        5. Displays results in the feature importance table
+        6. Updates the selected features list
+        
+        The method supports five different feature selection approaches:
+        - ANOVA F Test: Statistical test for continuous features
+        - Mutual Information: Captures non-linear feature relationships
+        - Random Forest Importance: Uses ensemble tree-based importance
+        - Recursive Feature Elimination: Iterative backward selection
+        - L1 Regularization: LASSO-based automatic selection
+        
+        Raises:
+            Warning dialogs for missing prerequisites
+            Critical error dialogs for processing failures
+        """
+        if self.processed_df is None:
+            QMessageBox.warning(self, "Warning", "Please process the dataframe first in Tab 1")
+            return
+
+        if not self.current_method:
+            QMessageBox.warning(self, "Warning", "Please select a method from the list")
+            return
+        
+        try:
+            target_col = None
+            for file_name, file_info in self.files_dict.items():
+                if file_info['type'] == 'Target':
+                    target_col = os.path.basename(file_name).replace('.tif', '')
+                    break
+            
+            if not target_col:
+                QMessageBox.critical(self, "Error", "No target column found")
+                return
+
+            feature_cols = [col for col in self.processed_df.columns 
+                           if col not in ['x', 'y', target_col]]
+            
+            X = self.processed_df[feature_cols].copy()
+            y = self.processed_df[target_col].copy()
+
+            mask = ~(X.isnull().any(axis=1) | y.isnull())
+            X = X[mask]
+            y = y[mask]
+            
+            if len(X) == 0:
+                QMessageBox.critical(self, "Error", "No valid data after removing NaN values")
+                return
+
+            results = self.apply_feature_selection_method(X, y, feature_cols)
+            
+            if results:
+                self.display_results(results)
+                QMessageBox.information(self, "Success", 
+                    f"Feature selection completed using {self.current_method}!\n"
+                    f"Selected {len(results)} most important features.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Feature selection failed: {str(e)}")
+            QgsMessageLog.logMessage(f"Feature selection error: {str(e)}", level=Qgis.Critical)
+
+    def apply_feature_selection_method(self, X, y, feature_cols):
+        """
+        Apply the specific feature selection algorithm to the data.
+        
+        Implements five different feature selection methods, each with specific
+        characteristics and use cases. All methods return the top k features
+        based on their respective scoring mechanisms.
+        
+        Args:
+            X (pd.DataFrame): Feature matrix with samples as rows and features as columns
+            y (pd.Series): Target vector with class labels
+            feature_cols (list): List of feature column names
+            
+        Returns:
+            list: List of lists containing [rank, feature_name, score, selected_status]
+                 for the selected features, sorted by importance score
+                 
+        Raises:
+            ValueError: If an unknown method is specified
+            
+        Methods implemented:
+            - ANOVA F Test: Uses f_classif to score features based on ANOVA F-statistic
+            - Mutual Information: Uses mutual_info_classif for non-linear relationships  
+            - Random Forest Importance: Uses feature_importances_ from RandomForest
+            - Recursive Feature Elimination: Uses RFE with RandomForest estimator
+            - L1 Regularization: Uses LogisticRegression with L1 penalty
+        """
+        k = min(self.num_features_to_select, len(feature_cols))
+            
+        if self.current_method == "ANOVA F Test":
+            selector = SelectKBest(f_classif, k=k)
+            selector.fit(X, y)
+            scores = selector.scores_
+            selected_mask = selector.get_support()
+            
+        elif self.current_method == "Mutual Information":
+            selector = SelectKBest(mutual_info_classif, k=k)
+            selector.fit(X, y)
+            scores = selector.scores_
+            selected_mask = selector.get_support()
+            
+        elif self.current_method == "Random Forest Importance":
+            rf = RandomForestClassifier(n_estimators=100, random_state=42, 
+                                      class_weight='balanced')
+            rf.fit(X, y)
+            scores = rf.feature_importances_
+            top_indices = scores.argsort()[-k:]
+            selected_mask = np.zeros(len(feature_cols), dtype=bool)
+            selected_mask[top_indices] = True
+            
+        elif self.current_method == "Recursive Feature Elimination":
+
+            estimator = RandomForestClassifier(
+                n_estimators=50,
+                class_weight='balanced',
+                random_state=42,
+                max_depth=10
+            )
+            selector = RFE(estimator, n_features_to_select=k)
+            selector.fit(X, y)
+            scores = 1.0 / selector.ranking_
+            selected_mask = selector.get_support()
+            
+        elif self.current_method == "L1 Regularization":
+            lasso = LogisticRegression(penalty='l1', solver='liblinear', 
+                                     class_weight='balanced', random_state=42, max_iter=1000)
+            selector = SelectFromModel(lasso, max_features=k)
+            selector.fit(X, y)
+            scores = abs(selector.estimator_.coef_[0])
+            selected_mask = selector.get_support()
+        
+        else:
+            raise ValueError(f"Unknown method: {self.current_method}")
+
+        results = []
+        feature_score_pairs = list(zip(feature_cols, scores, selected_mask))
+
+        feature_score_pairs.sort(key=lambda x: x[1], reverse=True)
+
+        self.selected_features = [name for name, score, selected in feature_score_pairs if selected]
+
+        rank = 1
+        for name, score, selected in feature_score_pairs:
+            if selected:
+                results.append([rank, name, f"{score:.4f}", "✓"])
+                rank += 1
+        
+        return results
+
+    def display_results(self, results):
+        """
+        Display feature selection results in the table view.
+        
+        Updates the feature importance table model with new results and
+        adjusts column widths for optimal display. Also updates the button
+        text to indicate successful completion.
+        
+        Args:
+            results (list): List of result rows containing rank, feature name,
+                          importance score, and selection status
+        """
+        self.feature_model.update_data(results)
+        
+        self.featImpValues.resizeColumnsToContents()
+        
+        self.featImpCalc.setText(f"✓ {self.current_method} Applied - Select Different Method")
