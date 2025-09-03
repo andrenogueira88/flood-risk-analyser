@@ -66,7 +66,7 @@ class FeatureImportanceModel(QAbstractTableModel):
         """
         super().__init__()
         self._data = data or []
-        self._headers = ['Rank', 'Feature Name', 'Importance Score', 'Selected']
+        self._headers = ['Rank', 'Feature Name', 'Importance Score']
     
     def data(self, index, role):
         """
@@ -149,7 +149,6 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         processed_df (pd.DataFrame): Processed and merged DataFrame from all rasters
         selected_features (list): List of selected feature names after feature selection
         current_method (str): Currently selected feature selection method
-        num_features_to_select (int): Number of top features to select
         feature_model (FeatureImportanceModel): Model for displaying feature results
     """
     def __init__(self, parent=None):
@@ -169,7 +168,6 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.processed_df = None
         self.selected_features = []
         self.current_method = None
-        self.num_features_to_select = 10
 
         self.feature_model = FeatureImportanceModel()
         self.featImpValues.setModel(self.feature_model)
@@ -488,20 +486,21 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             percentage = (count / total_samples) * 100
             self.targetDist.addItem(f"Class {class_val}: {count} samples ({percentage:.2f}%)")
 
+
     def setup_methods_list(self):
         """
         Initialize the feature selection methods list widget.
         
-        Populates the methods list with available feature selection techniques,
+        Populates the methods list with available feature importance techniques,
         each with a brief description of its characteristics and use cases.
         Sets the default selection to ANOVA F Test.
         """
         methods = [
-            "ANOVA F Test - Best for continuous features", 
+            "ANOVA F Test - Statistical significance for continuous features", 
             "Mutual Information - Captures non-linear relationships",
             "Random Forest Importance - Handles feature interactions",
-            "Recursive Feature Elimination - Iterative selection",
-            "L1 Regularization - Automatic sparse selection"
+            "Permutation Importance - Model-agnostic feature importance",
+            "L1 Regularization - Coefficient-based importance"
         ]
         
         self.MethodsList.clear()
@@ -541,9 +540,8 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
                            [name.replace('.tif', '') for name, info in self.files_dict.items() if info['type'] == 'Target'])]
             
             max_features = len(feature_cols)
-            self.num_features_to_select = min(10, max_features)
             
-            self.featImpCalc.setText(f"Apply {self.current_method or 'ANOVA F Test'} (Top {self.num_features_to_select})")
+            self.featImpCalc.setText(f"Apply {self.current_method or 'ANOVA F Test'}")
             self.featImpCalc.setEnabled(True)
 
     def calculate_feature_importance(self):
@@ -607,20 +605,18 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             if results:
                 self.display_results(results)
                 QMessageBox.information(self, "Success", 
-                    f"Feature selection completed using {self.current_method}!\n"
-                    f"Selected {len(results)} most important features.")
+                    f"Feature Importance Calculation completed using {self.current_method}!")
             
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Feature selection failed: {str(e)}")
-            QgsMessageLog.logMessage(f"Feature selection error: {str(e)}", level=Qgis.Critical)
+            QMessageBox.critical(self, "Error", f"Feature Importance failed: {str(e)}")
+            QgsMessageLog.logMessage(f"Feature Importance error: {str(e)}", level=Qgis.Critical)
 
     def apply_feature_selection_method(self, X, y, feature_cols):
         """
-        Apply the specific feature selection algorithm to the data.
+        Apply the specific feature importance calculation method to the data.
         
-        Implements five different feature selection methods, each with specific
-        characteristics and use cases. All methods return the top k features
-        based on their respective scoring mechanisms.
+        Implements five different feature importance methods, each providing
+        meaningful importance scores for all features without selection caps.
         
         Args:
             X (pd.DataFrame): Feature matrix with samples as rows and features as columns
@@ -628,78 +624,66 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             feature_cols (list): List of feature column names
             
         Returns:
-            list: List of lists containing [rank, feature_name, score, selected_status]
-                 for the selected features, sorted by importance score
-                 
+            list: List of lists containing [rank, feature_name, score]
+                for all features, sorted by importance score
+                
         Raises:
             ValueError: If an unknown method is specified
-            
-        Methods implemented:
-            - ANOVA F Test: Uses f_classif to score features based on ANOVA F-statistic
-            - Mutual Information: Uses mutual_info_classif for non-linear relationships  
-            - Random Forest Importance: Uses feature_importances_ from RandomForest
-            - Recursive Feature Elimination: Uses RFE with RandomForest estimator
-            - L1 Regularization: Uses LogisticRegression with L1 penalty
         """
-        k = min(self.num_features_to_select, len(feature_cols))
-            
+        from sklearn.inspection import permutation_importance
+        
         if self.current_method == "ANOVA F Test":
-            selector = SelectKBest(f_classif, k=k)
+            # Statistical test - higher F-scores indicate more important features
+            selector = SelectKBest(f_classif, k='all')
             selector.fit(X, y)
             scores = selector.scores_
-            selected_mask = selector.get_support()
             
         elif self.current_method == "Mutual Information":
-            selector = SelectKBest(mutual_info_classif, k=k)
+            # Information-theoretic measure - higher MI indicates stronger dependency
+            selector = SelectKBest(mutual_info_classif, k='all')
             selector.fit(X, y)
             scores = selector.scores_
-            selected_mask = selector.get_support()
             
         elif self.current_method == "Random Forest Importance":
+            # Tree-based feature importance - based on impurity reduction
             rf = RandomForestClassifier(n_estimators=100, random_state=42, 
-                                      class_weight='balanced')
+                                    class_weight='balanced')
             rf.fit(X, y)
             scores = rf.feature_importances_
-            top_indices = scores.argsort()[-k:]
-            selected_mask = np.zeros(len(feature_cols), dtype=bool)
-            selected_mask[top_indices] = True
             
-        elif self.current_method == "Recursive Feature Elimination":
-
-            estimator = RandomForestClassifier(
-                n_estimators=50,
-                class_weight='balanced',
-                random_state=42,
-                max_depth=10
-            )
-            selector = RFE(estimator, n_features_to_select=k)
-            selector.fit(X, y)
-            scores = 1.0 / selector.ranking_
-            selected_mask = selector.get_support()
+        elif self.current_method == "Permutation Importance":
+            # Model-agnostic importance - based on performance drop when shuffled
+            rf = RandomForestClassifier(n_estimators=50, random_state=42, 
+                                    class_weight='balanced')
+            rf.fit(X, y)
+            perm_importance = permutation_importance(rf, X, y, n_repeats=5, 
+                                                random_state=42)
+            scores = perm_importance.importances_mean
             
         elif self.current_method == "L1 Regularization":
+            # Linear model coefficients - absolute values indicate importance
             lasso = LogisticRegression(penalty='l1', solver='liblinear', 
-                                     class_weight='balanced', random_state=42, max_iter=1000)
-            selector = SelectFromModel(lasso, max_features=k)
-            selector.fit(X, y)
-            scores = abs(selector.estimator_.coef_[0])
-            selected_mask = selector.get_support()
+                                    class_weight='balanced', random_state=42, 
+                                    max_iter=1000)
+            lasso.fit(X, y)
+            scores = abs(lasso.coef_[0])
         
         else:
             raise ValueError(f"Unknown method: {self.current_method}")
 
+        # Create results with all features ranked by importance
         results = []
-        feature_score_pairs = list(zip(feature_cols, scores, selected_mask))
-
+        feature_score_pairs = list(zip(feature_cols, scores))
+        
+        # Sort by score (descending)
         feature_score_pairs.sort(key=lambda x: x[1], reverse=True)
-
-        self.selected_features = [name for name, score, selected in feature_score_pairs if selected]
-
-        rank = 1
-        for name, score, selected in feature_score_pairs:
-            if selected:
-                results.append([rank, name, f"{score:.4f}", "✓"])
-                rank += 1
+        
+        # Store all features as "selected" for display purposes
+        self.selected_features = [name for name, score in feature_score_pairs]
+        
+        # Create ranked results
+        for rank, (name, score) in enumerate(feature_score_pairs, 1):
+            results.append([rank, name, f"{score:.4f}"])
         
         return results
 
