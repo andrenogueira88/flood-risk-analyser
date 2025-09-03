@@ -13,12 +13,12 @@
  ***************************************************************************/
 
 /***************************************************************************
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
+ * *
+ * This program is free software; you can redistribute it and/or modify  *
+ * it under the terms of the GNU General Public License as published by  *
+ * the Free Software Foundation; either version 2 of the License, or     *
+ * (at your option) any later version.                                   *
+ * *
  ***************************************************************************/
 """
 
@@ -150,6 +150,7 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         selected_features (list): List of selected feature names after feature selection
         current_method (str): Currently selected feature selection method
         feature_model (FeatureImportanceModel): Model for displaying feature results
+        importance_results (list): Stores the last calculated feature importance results
     """
     def __init__(self, parent=None):
         """
@@ -168,6 +169,7 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
         self.processed_df = None
         self.selected_features = []
         self.current_method = None
+        self.importance_results = []
 
         self.feature_model = FeatureImportanceModel()
         self.featImpValues.setModel(self.feature_model)
@@ -322,6 +324,43 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         return df
 
+    def _export_statistics(self, df):
+        """
+        Exports descriptive statistics and target distribution to a CSV file.
+        The file is saved in the same directory as the first input file.
+        """
+        try:
+            # Get the list of continuous and target columns
+            continuous_cols = [os.path.basename(path).replace('.tif', '') 
+                              for path, info in self.files_dict.items() 
+                              if info['type'] == 'Continuous']
+            target_col = [os.path.basename(path).replace('.tif', '') 
+                          for path, info in self.files_dict.items() 
+                          if info['type'] == 'Target'][0]
+            
+            # Create a dataframe for continuous feature stats
+            cont_stats = df[continuous_cols].describe().T
+            cont_stats.columns = ['count', 'mean', 'std', 'min', '25%', '50%', '75%', 'max']
+            
+            # Create a dataframe for target distribution
+            target_dist = df[target_col].value_counts().reset_index()
+            target_dist.columns = ['Class', 'Count']
+            target_dist['Percentage'] = (target_dist['Count'] / target_dist['Count'].sum()) * 100
+            
+            output_dir = os.path.dirname(list(self.files_dict.values())[0]['path'])
+            stats_path = os.path.join(output_dir, 'feature_statistics.csv')
+
+            with open(stats_path, 'w') as f:
+                f.write("# Continuous Feature Statistics\n")
+                cont_stats.to_csv(f)
+                f.write("\n\n# Target Distribution\n")
+                target_dist.to_csv(f, index=False)
+            
+            QgsMessageLog.logMessage(f"Statistics exported to {stats_path}", level=Qgis.Info)
+
+        except Exception as e:
+            QgsMessageLog.logMessage(f"Failed to export statistics: {str(e)}", level=Qgis.Critical)
+
     def process_dataframe(self):
         """
         Process all loaded raster files into a unified DataFrame for analysis.
@@ -428,6 +467,7 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
 
         final_df.dropna(subset=features, how='any', inplace=True)
         self.update_statistics_tables(final_df)
+        self._export_statistics(final_df) # Export statistics after tables are updated
 
         self.enable_feature_selection()
 
@@ -544,6 +584,28 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             self.featImpCalc.setText(f"Apply {self.current_method or 'ANOVA F Test'}")
             self.featImpCalc.setEnabled(True)
 
+    def _export_importance(self):
+        """
+        Exports feature importance results to a CSV file.
+        The file is saved in the same directory as the first input file.
+        """
+        if not hasattr(self, 'importance_results') or not self.importance_results:
+            QgsMessageLog.logMessage("No importance results to export.", level=Qgis.Warning)
+            return
+        
+        try:
+            df_results = pd.DataFrame(self.importance_results, 
+                                      columns=['Rank', 'Feature Name', 'Importance Score'])
+            
+            output_dir = os.path.dirname(list(self.files_dict.values())[0]['path'])
+            importance_path = os.path.join(output_dir, 'feature_importance.csv')
+            df_results.to_csv(importance_path, index=False)
+            
+            QgsMessageLog.logMessage(f"Feature importance exported to {importance_path}", level=Qgis.Info)
+
+        except Exception as e:
+            QgsMessageLog.logMessage(f"Failed to export feature importance: {str(e)}", level=Qgis.Critical)
+
     def calculate_feature_importance(self):
         """
         Execute the selected feature selection method on the processed data.
@@ -603,7 +665,9 @@ class FloodRiskAnalyzerDialog(QtWidgets.QDialog, FORM_CLASS):
             results = self.apply_feature_selection_method(X, y, feature_cols)
             
             if results:
+                self.importance_results = results  # Store results
                 self.display_results(results)
+                self._export_importance()  # Export importance after tables are updated
                 QMessageBox.information(self, "Success", 
                     f"Feature Importance Calculation completed using {self.current_method}!")
             
